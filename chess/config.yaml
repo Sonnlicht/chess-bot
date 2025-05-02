@@ -1,0 +1,17 @@
+# Use this file for configuation, if you're not using the Winform UI
+# Enable or disable analysis
+enabled: true
+# Which side you are playing (white/black)
+side: white
+# Engine ELO rating/depth (0-3200)
+elo: 2000
+# Color for move arrows (hex format)
+arrow_color: "#0080FF"
+
+# Legit mode settings
+legit_mode: false
+blunder_chance: 0.15
+suboptimal_chance: 0.35
+skill_variance: 0.2
+consistency: 70
+elo_variance: 200 
