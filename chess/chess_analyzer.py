@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -8,40 +8,55 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException,
 from rich.console import Console
 import time
 import chess
+import traceback
 import chess.engine
 import os
 import re
 import sys
 import subprocess
 import json
+import random
+from dataclasses import dataclass
 import threading
+import yaml 
+
+
+@dataclass
+class LegitModeSettings:
+    enabled: bool = False
+    blunder_chance: float = 0.15      # 15% chance to make a small blunder
+    suboptimal_chance: float = 0.35   # 35% chance to make slightly suboptimal move
+    skill_variance: float = 0.2       # How much skill varies (0.0-1.0)
+    consistency: int = 70             # Consistency of play (0-100)
+    elo_variance: int = 200           # How much ELO effectively varies
+
 
 # Parse command line arguments
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Chess Game Analyzer')
-    parser.add_argument('--enabled', type=str, default='True', help='Enable or disable analysis')
-    parser.add_argument('--side', type=str, default='white', choices=['white', 'black'], help='Which side you are playing')
-    parser.add_argument('--elo', type=int, default=2000, help='Engine ELO rating (0-3200)')
-    parser.add_argument('--arrow-color', type=str, default='#0080FF', help='Color for move arrows (hex format)')
-    parser.add_argument('--settings-file', type=str, help='Path to the settings JSON file')
-    
-    args = parser.parse_args()
-    
-    # Convert string to boolean for enabled
-    args.enabled = args.enabled.lower() == 'true'
-    
-    # Validate ELO range
-    args.elo = max(0, min(3200, args.elo))
-    
-    # Convert hex color to rgba
-    if args.arrow_color.startswith('#'):
-        r = int(args.arrow_color[1:3], 16)
-        g = int(args.arrow_color[3:5], 16)
-        b = int(args.arrow_color[5:7], 16)
-        args.arrow_color = f"rgba({r}, {g}, {b}, 0.8)"
-    
-    return args
+    # Load config from YAML file
+    config_path = 'config.yaml'
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+    except Exception as e:
+        console.print(f"[red]Error loading config file: {e}[/red]")
+        return None
 
+    # Create a simple namespace object to store config
+    class Config:
+        def __init__(self, config):
+            self.enabled = config.get('enabled', True)
+            self.side = config.get('side', 'white')
+            self.elo = config.get('elo', 2000)
+            self.arrow_color = config.get('arrow_color', '#0080FF')
+            self.legit_mode = config.get('legit_mode', True)
+            self.blunder_chance = config.get('blunder_chance', 0.15)
+            self.suboptimal_chance = config.get('suboptimal_chance', 0.35)
+            self.settings_file = None  # Not used when using YAML config
+
+    return Config(config)
+
+legit_mode = LegitModeSettings()
 # Initialize rich console
 console = Console()
 
@@ -51,6 +66,126 @@ current_turn = "white"  # Track whose turn it is
 last_moves = {"white": None, "black": None}
 evaluation_score = 0.0  # Track the current evaluation
 args = parse_arguments()  # Get command line arguments
+
+
+# Function to select a move based on legit mode criteria
+def select_legit_move(moves_with_eval, is_white):
+    """Select a move that mimics human play, including occasional blunders"""
+    global legit_mode
+    
+    if not moves_with_eval or len(moves_with_eval) < 2:
+        return moves_with_eval[0][0] if moves_with_eval else None
+    
+    # If legit mode is disabled, always return best move
+    if not legit_mode.enabled:
+        return moves_with_eval[0][0]
+    
+    # Roll for move selection type
+    roll = random.random()
+    
+    # Perspective adjustment: negate scores if playing as black
+    if not is_white:
+        moves_with_eval = [(move, -score) for move, score in moves_with_eval]
+    
+    # Get the best move's evaluation as reference
+    best_eval = moves_with_eval[0][1]
+    
+    # Case 1: Make a blunder (a significantly worse move)
+    if roll < legit_mode.blunder_chance:
+        # Filter for moves that are noticeably worse but not catastrophic
+        blunder_candidates = []
+        for move, eval_score in moves_with_eval[1:]:  # Skip the best move
+            eval_diff = best_eval - eval_score
+            # Look for moves that are worse by 0.5-1.5 pawns
+            if 0.5 <= eval_diff <= 1.5:
+                blunder_candidates.append((move, eval_score))
+        
+        if blunder_candidates:
+            console.print("[blue]Legit mode: Suggesting a small blunder[/blue]")
+            # Select a random blunder from candidates
+            return random.choice(blunder_candidates)[0]
+    
+    # Case 2: Make a suboptimal move (slightly worse)
+    elif roll < legit_mode.blunder_chance + legit_mode.suboptimal_chance:
+        # Filter for moves that are slightly suboptimal
+        suboptimal_candidates = []
+        for move, eval_score in moves_with_eval[1:]:  # Skip the best move
+            eval_diff = best_eval - eval_score
+            # Look for moves that are worse by 0.1-0.4 pawns
+            if 0.1 <= eval_diff <= 0.4:
+                suboptimal_candidates.append((move, eval_score))
+        
+        if suboptimal_candidates:
+            console.print("[blue]Legit mode: Suggesting a slightly suboptimal move[/blue]")
+            # Select a random suboptimal move from candidates
+            return random.choice(suboptimal_candidates)[0]
+    
+    # Case 3: Use best move (with a slight preference for different "style" best moves)
+    # This is the default case
+    console.print("[blue]Legit mode: Suggesting the best move[/blue]")
+    return moves_with_eval[0][0]
+
+# Function to get alternative moves of different qualities
+def get_alternative_moves(board, engine, time_limit=0.1, multipv=5):
+    """Get multiple alternative moves with their evaluations"""
+    if not engine or not board:
+        return []
+    
+    try:
+        # Set time limit and multipv for analysis
+        limit = chess.engine.Limit(time=time_limit)
+        
+        try:
+            # Try to configure engine for multi-PV mode
+            engine.configure({"MultiPV": multipv})
+            use_multipv = True
+        except Exception as config_error:
+            console.print(f"[yellow]Could not set MultiPV option: {config_error}. Using single PV mode.[/yellow]")
+            use_multipv = False
+        
+        # Get analysis - either multi-PV or just best move
+        if use_multipv:
+            result = engine.analyse(board, limit, multipv=multipv)
+        else:
+            # Fallback to single PV analysis
+            info = engine.analyse(board, limit)
+            result = [info]  # Wrap in list to match multi-PV format
+        
+        # Reset engine to default if we were able to set it initially
+        if use_multipv:
+            try:
+                engine.configure({"MultiPV": 1})
+            except:
+                pass
+        
+        moves_with_eval = []
+        
+        for entry in result:
+            moves = entry.get("pv", [])
+            if not moves:
+                continue
+                
+            move = moves[0]
+            score = entry.get("score")
+            
+            # Convert score to decimal value for white's perspective
+            eval_score = 0.0
+            try:
+                if hasattr(score.white(), 'mate') and score.white().mate() is not None:
+                    mate_value = score.white().mate()
+                    eval_score = 9.9 if mate_value > 0 else -9.9
+                else:
+                    eval_score = score.white().score() / 100
+            except Exception as e:
+                console.print(f"[yellow]Error processing score: {e}[/yellow]")
+            
+            moves_with_eval.append((move, eval_score))
+        
+        return moves_with_eval
+        
+    except Exception as e:
+        console.print(f"[yellow]Error getting alternative moves: {e}[/yellow]")
+        return []
 
 # Function to send evaluation to C# application
 def send_evaluation(score):
@@ -515,53 +650,33 @@ def get_current_position_from_fen(fen):
         return None
 
 def get_best_move(board, engine, time_limit=0.1):
-    """Get the best move from the engine with error handling"""
-    global evaluation_score
+    """Get the best move from the engine with legit mode support"""
+    global evaluation_score, legit_mode
     
     if not engine or not board:
         return None, 0.0
     
     try:
-        # Set time limit for analysis
-        limit = chess.engine.Limit(time=time_limit)
+        # Get multiple candidate moves
+        moves_with_eval = get_alternative_moves(board, engine, time_limit, multipv=5)
         
-        # Get best move and info
-        result = engine.analyse(board, limit)
-        moves = result.get("pv", [])
-        best_move = moves[0] if moves else None
+        if not moves_with_eval:
+            console.print("[yellow]No moves found in analysis[/yellow]")
+            return None, 0.0
         
-        # Get evaluation score
-        score = result.get("score")
-        if score:
-            # Convert score to decimal value for white's perspective
-            try:
-                # First check if it's a mate score
-                if hasattr(score.white(), 'mate') and score.white().mate() is not None:
-                    mate_value = score.white().mate()
-                    if mate_value > 0:
-                        evaluation_score = 9.9  # Positive mate
-                    else:
-                        evaluation_score = -9.9  # Negative mate (being mated)
-                else:
-                    # Regular evaluation score in centipawns
-                    evaluation_score = score.white().score() / 100
-            except Exception as e:
-                console.print(f"[yellow]Error processing score: {e}[/yellow]")
-                # Default to previous evaluation if there's an error
+        # Default evaluation from best move
+        evaluation_score = moves_with_eval[0][1]
         
-        # If no best move found, try getting top 3 moves with different approach
-        if not best_move:
-            console.print("[yellow]No best move found in primary analysis, trying alternative...[/yellow]")
-            # Try a different approach - just use search instead of analyse
-            result = engine.play(board, limit)
-            if result and result.move:
-                best_move = result.move
-                console.print("[green]Alternative move found![/green]")
+        # Determine if we're playing as white
+        is_white = current_turn == "white"
+        
+        # Select move based on legit mode criteria
+        selected_move = select_legit_move(moves_with_eval, is_white)
         
         # Send evaluation to C# application
         send_evaluation(evaluation_score)
         
-        return best_move, evaluation_score
+        return selected_move, evaluation_score
     except Exception as e:
         console.print(f"[yellow]Error getting best move: {e}[/yellow]")
         return None, evaluation_score
@@ -609,9 +724,9 @@ def analyze_and_display_best_move(driver, board_state):
         console.print("[yellow]Could not generate valid FEN, skipping analysis[/yellow]")
         return
     
-# Skip if analysis is disabled
+    # Skip if analysis is disabled
     if not args.enabled or not engine:
-    # Only print message about disabled analysis if we have an engine
+        # Only print message about disabled analysis if we have an engine
         if engine and not args.enabled:
             console.print("[dim]Analysis disabled by user settings[/dim]")
             return
@@ -782,7 +897,7 @@ def clean_up_visual_elements(driver):
 
 def watch_settings_file(settings_path):
     """Watch the settings file for changes and update args accordingly"""
-    global args
+    global args, legit_mode
     
     if not os.path.exists(settings_path):
         console.print(f"[yellow]Settings file not found: {settings_path}[/yellow]")
@@ -793,7 +908,7 @@ def watch_settings_file(settings_path):
     
     while True:
         try:
-            time.sleep(0.5)  # Check more frequently (every half second)
+            time.sleep(0.5)
             
             if not os.path.exists(settings_path):
                 continue
@@ -806,16 +921,25 @@ def watch_settings_file(settings_path):
                 
                 # Read new settings
                 with open(settings_path, 'r') as f:
-                    settings = json.load(f)
+                    config = yaml.safe_load(f)
                 
                 # Store previous values to detect changes
                 previous_enabled = args.enabled
+                previous_legit = legit_mode.enabled if hasattr(legit_mode, 'enabled') else False
                 
                 # Update args
-                args.enabled = settings.get('enabled', args.enabled)
-                args.side = settings.get('side', args.side)
-                args.elo = settings.get('elo', args.elo)
-                args.arrow_color = settings.get('arrow_color', args.arrow_color)
+                args.enabled = config.get('enabled', args.enabled)
+                args.side = config.get('side', args.side)
+                args.elo = config.get('elo', args.elo)
+                args.arrow_color = config.get('arrow_color', args.arrow_color)
+                
+                # Update legit mode settings
+                legit_mode.enabled = config.get('legit_mode', legit_mode.enabled)
+                legit_mode.blunder_chance = config.get('blunder_chance', legit_mode.blunder_chance)
+                legit_mode.suboptimal_chance = config.get('suboptimal_chance', legit_mode.suboptimal_chance)
+                legit_mode.skill_variance = config.get('skill_variance', legit_mode.skill_variance)
+                legit_mode.consistency = config.get('consistency', legit_mode.consistency)
+                legit_mode.elo_variance = config.get('elo_variance', legit_mode.elo_variance)
                 
                 # Convert hex color to rgba if needed
                 if args.arrow_color.startswith('#'):
@@ -827,13 +951,17 @@ def watch_settings_file(settings_path):
                 # Clear arrows if disabled state changed
                 if previous_enabled != args.enabled and not args.enabled:
                     console.print("[yellow]Analysis disabled, clearing visual elements...[/yellow]")
-                    # Send a message that will be handled by monitor_board_state to clean up visuals
-                    # We'll implement this handler in the monitor_board_state function
                 
-                console.print(f"[green]Updated settings: enabled={args.enabled}, side={args.side}, elo={args.elo}[/green]")
+                # Log legit mode state change
+                if previous_legit != legit_mode.enabled:
+                    mode_state = "ENABLED" if legit_mode.enabled else "DISABLED"
+                    console.print(f"[green]Legit mode {mode_state}[/green]")
+                
+                console.print(f"[green]Updated settings: enabled={args.enabled}, side={args.side}, elo={args.elo}, legit_mode={legit_mode.enabled}[/green]")
         
         except Exception as e:
             console.print(f"[yellow]Error watching settings file: {e}[/yellow]")
+
 
 def wait_for_page_load(driver, timeout=10):
     """Wait for the chess board to load"""
@@ -847,13 +975,14 @@ def wait_for_page_load(driver, timeout=10):
         return False
 
 def main():
-    global crash_count
+    global crash_count, legit_mode
     crash_count = 0
     max_crashes = 5
-    
-    # Import traceback for better error reporting
-    import traceback
-    
+        
+    legit_mode.enabled = args.legit_mode
+    legit_mode.blunder_chance = args.blunder_chance
+    legit_mode.suboptimal_chance = args.suboptimal_chance
+
     # Set up Chrome WebDriver with additional error handling
     options = webdriver.ChromeOptions()
     options.add_argument('--no-sandbox')
@@ -870,6 +999,10 @@ def main():
     console.print(f"Playing Side: {args.side}")
     console.print(f"Engine ELO: {args.elo}")
     console.print(f"Arrow Color: {args.arrow_color}")
+    console.print(f"Legit Mode: {legit_mode.enabled}")
+    if legit_mode.enabled:
+        console.print(f"  - Blunder Chance: {legit_mode.blunder_chance*100:.1f}%")
+        console.print(f"  - Suboptimal Move Chance: {legit_mode.suboptimal_chance*100:.1f}%")
     
     if hasattr(args, 'settings_file') and args.settings_file:
         settings_thread = threading.Thread(
