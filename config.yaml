@@ -1,0 +1,7 @@
+arrow_color: '#400080'
+blunder_chance: 0.15
+elo: 2000
+enabled: true
+legit_mode: false
+side: white
+suboptimal_chance: 0.35
