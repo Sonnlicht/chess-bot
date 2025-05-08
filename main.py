@@ -760,7 +760,7 @@ def detect_turn_from_moves(moves):
 
 def analyze_and_display_best_move(driver, board_state):
     """Analyze the position and display the best move"""
-    global evaluation_score, current_turn, args, settings_window
+    global evaluation_score, current_turn, args
     
     # Make sure we check if analysis is enabled immediately
     if not args.enabled:
@@ -808,12 +808,6 @@ def analyze_and_display_best_move(driver, board_state):
     from_square = chess.square_name(best_move.from_square)
     to_square = chess.square_name(best_move.to_square)
     
-    # Update GUI with move and evaluation
-    if settings_window:
-        settings_window.draw_eval_bar(score)
-        move_text = f"{current_turn.capitalize()}: {from_square}{to_square} (Eval: {score:+.2f})"
-        settings_window.add_move(move_text)
-    
     # Convert to numeric format for visualization
     source_pos = convert_algebraic_to_numeric(from_square)
     target_pos = convert_algebraic_to_numeric(to_square)
@@ -827,7 +821,7 @@ def analyze_and_display_best_move(driver, board_state):
 
 def monitor_board_state(driver):
     """Monitor the chess board for changes and analyze positions"""
-    global previous_board_state, current_turn, last_moves, evaluation_score, args, crash_count, settings_window
+    global previous_board_state, current_turn, last_moves, evaluation_score, args, crash_count
     
     try:
         # Log the current monitoring cycle and crash counter

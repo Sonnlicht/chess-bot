@@ -9,7 +9,7 @@ class ChessSettingsGUI:
     def __init__(self, root, config=None, legit_mode=None):
         self.root = root
         self.root.title("Chess Settings")
-        self.root.geometry("800x600")  # Increased window size
+        self.root.geometry("315x600")  # Reduced window size since we removed right panel
         
         # Initialize config and legit_mode first
         self.config = config
@@ -23,17 +23,9 @@ class ChessSettingsGUI:
         root.grid_rowconfigure(0, weight=1)
         root.grid_columnconfigure(0, weight=1)
         
-        # Create left panel for settings
+        # Create settings frame
         settings_frame = ttk.LabelFrame(container, text="Settings", padding="10")
         settings_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        
-        # Create right panel for evaluation and moves
-        info_frame = ttk.Frame(container, padding="10")
-        info_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        
-        # Configure container grid weights
-        container.grid_columnconfigure(0, weight=1)
-        container.grid_columnconfigure(1, weight=1)
         
         # Basic Settings Section
         ttk.Label(settings_frame, text="Basic Settings", font=('Helvetica', 12, 'bold')).grid(row=0, column=0, columnspan=2, pady=10)
@@ -96,19 +88,6 @@ class ChessSettingsGUI:
                                     command=lambda _: self.update_settings())
         suboptimal_slider.grid(row=9, column=1, sticky="ew", pady=5)
         
-        # Evaluation Bar (right panel)
-        eval_frame = ttk.LabelFrame(info_frame, text="Evaluation", padding="10")
-        eval_frame.grid(row=0, column=0, sticky="nsew", pady=5)
-        self.eval_canvas = tk.Canvas(eval_frame, width=40, height=200, bg='white')
-        self.eval_canvas.pack(pady=5)
-        self.draw_eval_bar(0.0)  # Initial evaluation
-        
-        # Moves List (right panel)
-        moves_frame = ttk.LabelFrame(info_frame, text="Moves List", padding="10")
-        moves_frame.grid(row=1, column=0, sticky="nsew", pady=5)
-        self.moves_text = tk.Text(moves_frame, height=10, width=30)
-        self.moves_text.pack(fill=tk.BOTH, expand=True)
-        
         # Status Label with improved styling
         self.status_label = ttk.Label(settings_frame, text="", font=('Helvetica', 9, 'italic'))
         self.status_label.grid(row=10, column=0, columnspan=2, pady=10)
@@ -127,36 +106,6 @@ class ChessSettingsGUI:
         style = ttk.Style()
         style.configure('Accent.TButton', font=('Helvetica', 10, 'bold'))
         style.configure('Switch.TCheckbutton', font=('Helvetica', 10))
-    
-    def draw_eval_bar(self, evaluation):
-        self.eval_canvas.delete("all")
-        height = self.eval_canvas.winfo_height()
-        width = self.eval_canvas.winfo_width()
-        
-        # Convert evaluation to visual representation (0 to 1)
-        eval_normalized = max(min(evaluation, 1.0), -1.0)
-        
-        # Draw black background bar (always starts from bottom)
-        black_height = height  # Full height for black bar
-        self.eval_canvas.create_rectangle(0, 0, width, height, fill='black')
-        
-        # Calculate white bar height (starts from bottom)
-        # For positive eval, white bar gets shorter (showing more black)
-        # For negative eval, white bar gets taller (showing less black)
-        white_height = height * (1.0 - abs(eval_normalized))
-        
-        # Draw white bar from bottom
-        self.eval_canvas.create_rectangle(0, height - white_height, width, height, 
-                                        fill='white', outline='#333333')
-        
-        # Draw evaluation text at appropriate position
-        text_y = 10 if evaluation >= 0 else height - 10
-        self.eval_canvas.create_text(width/2, text_y, text=f"{abs(evaluation):.1f}", 
-                                   fill='white')
-    
-    def add_move(self, move_text):
-        self.moves_text.insert(tk.END, move_text + "\n")
-        self.moves_text.see(tk.END)
     
     def choose_color(self):
         color = colorchooser.askcolor(color=self.arrow_color)
@@ -205,6 +154,31 @@ class ChessSettingsGUI:
         self.legit_mode_var.set(self.config.legit_mode)
         self.blunder_var.set(str(float(self.config.blunder_chance) * 100))
         self.suboptimal_var.set(str(float(self.config.suboptimal_chance) * 100))
+    
+    def add_move(self, move_text):
+        """Add a move to the GUI display"""
+        # Create a moves display area if it doesn't exist
+        if not hasattr(self, 'moves_text'):
+            # Create a frame for moves
+            moves_frame = ttk.LabelFrame(self.root, text="Moves", padding="10")
+            moves_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+            
+            # Add text widget for moves
+            self.moves_text = tk.Text(moves_frame, height=5, width=30)
+            self.moves_text.grid(row=0, column=0, sticky="nsew")
+            
+            # Add scrollbar
+            scrollbar = ttk.Scrollbar(moves_frame, orient="vertical", command=self.moves_text.yview)
+            scrollbar.grid(row=0, column=1, sticky="ns")
+            self.moves_text.configure(yscrollcommand=scrollbar.set)
+            
+            # Configure grid weights for moves frame
+            self.root.grid_rowconfigure(1, weight=1)
+            moves_frame.grid_columnconfigure(0, weight=1)
+        
+        # Add the move to the text widget
+        self.moves_text.insert(tk.END, move_text + "\n")
+        self.moves_text.see(tk.END)  # Auto-scroll to the latest move
 
 def create_settings_window(config, legit_mode):
     """Create and return a settings window instance"""
