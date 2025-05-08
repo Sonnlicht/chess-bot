@@ -1,6 +1,0 @@
-# auto move
-# bordering piece to move and where it moves.
-# better ui fluidity / better cfgs
-# clean code
-# engine elo (depth)
-# (add legit mode) test if dt
